@@ -30,7 +30,7 @@
 
 //----- TILT ALERT -----
 
-#define TILT_ALERT_TRESHOLD_ANGLE 25.0
+#define TILT_ALERT_TRESHOLD_ANGLE 30
 
 // interval in ms between tilt check
 #define TILT_ALERT_CHECK_INTERVAL 50
@@ -106,6 +106,8 @@ int tiltAlertChecksIndex = 0;
 long tiltAlertLastCheck = 0;
 boolean tiltAlertState = false;
 
+boolean mpuDisconnected = false;
+
 int16_t AcX,AcY,AcZ;
 double angle;
 
@@ -138,6 +140,10 @@ boolean checkLight() {
   //+ todo
 }
 
+boolean turnAccelOn() {
+  return i2c_start((I2C_ADDR_MPU6050 << 1) | I2C_WRITE);
+}
+
 void readAccelValues() {
   i2c_start((I2C_ADDR_MPU6050 << 1) | I2C_WRITE);
   i2c_write(0x3B);
@@ -149,6 +155,18 @@ void readAccelValues() {
   AcY=i2c_read(false)<<8|i2c_read(false);  // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
   AcZ=i2c_read(false)<<8|i2c_read(true);   // 0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
   i2c_stop();
+
+  if (AcX == -1 && AcY == -1 && AcZ == -1) {
+    if (!mpuDisconnected) {
+      mpuDisconnected = true;
+      writeError(4);
+    }
+  } else {
+    mpuDisconnected = false;
+    if (AcX == 0 && AcY == 0 && AcZ == 0) {
+      turnAccelOn();
+    }
+  }
 }
 
 double computeAngle(int32_t x, int32_t y, int32_t z) {
@@ -176,6 +194,8 @@ void writeError(byte num) {
    *  1 - test error
    *  2 - I2C: Initialization error. SDA or SCL are low
    *  3 - I2C: device MPU6050 not found
+   *  4 - I2C: MPU-6050 disconnected
+   *  5 - I2C: 
    */
 
   writeLed(LED_ERROR, HIGH);
@@ -367,7 +387,7 @@ void setup() {
     writeError(2);
   }
   // setup MPU6050
-  result = i2c_start((I2C_ADDR_MPU6050 << 1) | I2C_WRITE);
+  result = turnAccelOn();
   if (result) {
     i2c_write(0x6B); // PWR_MGMT_1 register
     i2c_write(0);    // set to zero (wakes up the MPU-6050)  
