@@ -39,17 +39,16 @@
 #define TILT_ALERT_TRESHOLD_TIME 600
 
 // ratio (positive checks / all checks) required to fire tilt alert
-#define TILT_ALERT_TRESHOLD_RATIO 0.9
+#define TILT_ALERT_TRESHOLD_ON 0.9
 
-// minimal duration of tilt alert
-#define TILT_ALERT_DURATION 500
+// ratio (positive checks / all checks) required to fire tilt alert
+#define TILT_ALERT_TRESHOLD_OFF 0.1
 
 //----- COMPUTED CONSTANTS -----
 #define LIGHT_SYSTEM_CHECK_COUNT (LIGHT_SYSTEM_TRESHOLD_TIME / LIGHT_SYSTEM_CHECK_INTERVAL)
 #define LIGHT_SYSTEM_TRESHOLD_COUNT ((int)(LIGHT_SYSTEM_CHECK_COUNT * LIGHT_SYSTEM_TRESHOLD_RATIO))
 
 #define TILT_ALERT_CHECK_COUNT (TILT_ALERT_TRESHOLD_TIME / TILT_ALERT_CHECK_INTERVAL)
-#define TILT_ALERT_TRESHOLD_COUNT ((int)(TILT_ALERT_CHECK_COUNT * TILT_ALERT_TRESHOLD_RATIO))
 
 //----- OTHER -----
 
@@ -105,7 +104,6 @@ boolean lightsState = false;
 boolean tiltAlertChecks[TILT_ALERT_CHECK_COUNT];
 int tiltAlertChecksIndex = 0;
 long tiltAlertLastCheck = 0;
-long tiltAlertLastFired = 0;
 boolean tiltAlertState = false;
 
 int16_t AcX,AcY,AcZ;
@@ -227,13 +225,9 @@ void pTiltAlert() {
     for (int i = 0; i < TILT_ALERT_CHECK_COUNT; i++) {
       if (tiltAlertChecks[i]) count++;
     }
-    if (count >= TILT_ALERT_TRESHOLD_COUNT) {
-      tiltAlertLastFired = now;
-    }
-  
-    if ((now <= tiltAlertLastFired + TILT_ALERT_DURATION) != tiltAlertState) {
+    if ((!tiltAlertState && (count >= TILT_ALERT_CHECK_COUNT * TILT_ALERT_TRESHOLD_ON)) || (tiltAlertState && (count <= TILT_ALERT_CHECK_COUNT * TILT_ALERT_TRESHOLD_OFF))) {
       tiltAlertState ^= true;
-  
+
       writeLed(LED_TILT_ALERT, tiltAlertState);
     }
   }
