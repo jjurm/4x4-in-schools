@@ -10,7 +10,10 @@
 //----- LEDS -----
 
 #define LED_HEARTBEAT 0
+#define LED_INFO1 2
+#define LED_INFO2 3
 #define LED_TILT_ALERT 4
+#define LED_HEADLIGHTS 5
 #define LED_PWR 6
 #define LED_ERROR 7
 
@@ -22,15 +25,17 @@
 // how long to look into past
 #define LIGHT_SYSTEM_TRESHOLD_TIME 1000
 
-// ratio (positive checks / all checks) required to fire tilt alert
-#define LIGHT_SYSTEM_TRESHOLD_RATIO 0.9
+// ratio (positive checks / all checks) required to turn lights on
+#define LIGHT_SYSTEM_TRESHOLD_ON 0.8
 
-// minimal duration of tilt alert
-#define LIGHTS_ON_DURATION 2000
+// ratio (positive checks / all checks) required to turn lights off
+#define LIGHT_SYSTEM_TRESHOLD_OFF 0.2
+
+#define LOOP_DELAY 1
 
 //----- TILT ALERT -----
 
-#define TILT_ALERT_TRESHOLD_ANGLE 30
+#define TILT_ALERT_TRESHOLD_ANGLE 25.0
 
 // interval in ms between tilt check
 #define TILT_ALERT_CHECK_INTERVAL 50
@@ -39,10 +44,10 @@
 #define TILT_ALERT_TRESHOLD_TIME 600
 
 // ratio (positive checks / all checks) required to fire tilt alert
-#define TILT_ALERT_TRESHOLD_ON 0.9
+#define TILT_ALERT_TRESHOLD_ON 0.8
 
-// ratio (positive checks / all checks) required to fire tilt alert
-#define TILT_ALERT_TRESHOLD_OFF 0.1
+// ratio (positive checks / all checks) required to stop tilt alert
+#define TILT_ALERT_TRESHOLD_OFF 0.2
 
 //----- COMPUTED CONSTANTS -----
 #define LIGHT_SYSTEM_CHECK_COUNT (LIGHT_SYSTEM_TRESHOLD_TIME / LIGHT_SYSTEM_CHECK_INTERVAL)
@@ -63,10 +68,15 @@
 #define PIN_LIGHT_SENSOR2 A4
 #define PIN_LIGHT_TRESHOLD A3
 
-#define PIN_LIGHTS1 11
-#define PIN_LIGHTS2 10
-#define PIN_LIGHTS3 9
-#define PIN_LIGHTS4 6
+#define PIN_OUT1 11
+#define PIN_OUT2 10
+#define PIN_OUT3 9
+#define PIN_OUT4 6
+
+#define PIN_HEADLIGHTS PIN_OUT1
+#define PIN_REAR_LIGHTS PIN_OUT2
+#define PIN_BLINKERS PIN_OUT3
+#define PIN_BUZZER PIN_OUT4
 
 #define PIN_BTN1 2
 #define PIN_BTN2 3
@@ -83,6 +93,11 @@
 #define PIN_SWITCH3 7
 #define PIN_SWITCH4 8
 
+#define PIN_SWITCH_REAR_LIGHTS PIN_SWITCH1
+#define PIN_SWITCH_HEADLIGHTS PIN_SWITCH2
+#define PIN_SWITCH_LEDS PIN_SWITCH3
+#define PIN_SWITCH_BUZZER PIN_SWITCH4
+
 #define PIN_SR_SER 12
 #define PIN_SR_SCK 13
 #define PIN_SR_RCK 16
@@ -98,15 +113,14 @@ byte leds;
 boolean lightSystemChecks[LIGHT_SYSTEM_CHECK_COUNT];
 int lightSystemChecksIndex = 0;
 long lightSystemLastCheck = 0;
-long lightsOnLastFired = 0;
 boolean lightsState = false;
+int lightsValue = 0;
 
 boolean tiltAlertChecks[TILT_ALERT_CHECK_COUNT];
 int tiltAlertChecksIndex = 0;
 long tiltAlertLastCheck = 0;
 boolean tiltAlertState = false;
-
-boolean mpuDisconnected = false;
+long blinkersStart;
 
 int16_t AcX,AcY,AcZ;
 double angle;
@@ -119,7 +133,8 @@ long now;
 //===== UTILS =====
 void writeLeds() {
   digitalWrite(PIN_SR_RCK, HIGH);
-  shiftOut(PIN_SR_SER, PIN_SR_SCK, MSBFIRST, leds);
+  boolean on = digitalRead(PIN_SWITCH_LEDS);
+  shiftOut(PIN_SR_SER, PIN_SR_SCK, MSBFIRST, on ? leds : 0);
   digitalWrite(PIN_SR_RCK, LOW);
 }
 
@@ -132,16 +147,16 @@ void writeLed(int index, boolean value) {
   writeLeds();
 }
 
+int readLight(int index) {
+  return analogRead(index == 1 ? PIN_LIGHT_SENSOR2 : PIN_LIGHT_SENSOR1);
+}
+
 int readTreshold() {
   return analogRead(PIN_LIGHT_TRESHOLD);
 }
 
 boolean checkLight() {
-  //+ todo
-}
-
-boolean turnAccelOn() {
-  return i2c_start((I2C_ADDR_MPU6050 << 1) | I2C_WRITE);
+  return readLight(0) >= readTreshold();
 }
 
 void readAccelValues() {
@@ -155,18 +170,6 @@ void readAccelValues() {
   AcY=i2c_read(false)<<8|i2c_read(false);  // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
   AcZ=i2c_read(false)<<8|i2c_read(true);   // 0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
   i2c_stop();
-
-  if (AcX == -1 && AcY == -1 && AcZ == -1) {
-    if (!mpuDisconnected) {
-      mpuDisconnected = true;
-      writeError(4);
-    }
-  } else {
-    mpuDisconnected = false;
-    if (AcX == 0 && AcY == 0 && AcZ == 0) {
-      turnAccelOn();
-    }
-  }
 }
 
 double computeAngle(int32_t x, int32_t y, int32_t z) {
@@ -175,6 +178,9 @@ double computeAngle(int32_t x, int32_t y, int32_t z) {
 
 boolean checkTilt() {
   readAccelValues();
+  if (AcX == -1 && AcY == -1 && AcZ == -1) {
+    return false;
+  }
   angle = computeAngle(AcX, AcY, AcZ);
   return angle >= TILT_ALERT_TRESHOLD_ANGLE;
 }
@@ -194,11 +200,9 @@ void writeError(byte num) {
    *  1 - test error
    *  2 - I2C: Initialization error. SDA or SCL are low
    *  3 - I2C: device MPU6050 not found
-   *  4 - I2C: MPU-6050 disconnected
-   *  5 - I2C: 
    */
 
-  writeLed(LED_ERROR, HIGH);
+  setLed(LED_ERROR, HIGH);
   
   EEPROM.update(eepromErrorIndex, num);
   eepromErrorIndex++;
@@ -212,7 +216,7 @@ void pLightSystem() {
   if (now >= lightSystemLastCheck + LIGHT_SYSTEM_CHECK_INTERVAL) {
     lightSystemLastCheck = now;
     
-    result = checkTilt();
+    result = checkLight();
     lightSystemChecksIndex = (lightSystemChecksIndex + 1) % LIGHT_SYSTEM_CHECK_COUNT;
     lightSystemChecks[lightSystemChecksIndex] = result;
   }
@@ -221,14 +225,18 @@ void pLightSystem() {
   for (int i = 0; i < LIGHT_SYSTEM_CHECK_COUNT; i++) {
     if (lightSystemChecks[i]) count++;
   }
-  if (count >= LIGHT_SYSTEM_TRESHOLD_COUNT) {
-    lightsOnLastFired = now;
-  }
-
-  if ((now <= lightsOnLastFired + LIGHTS_ON_DURATION) != lightsState) {
+  if ((!lightsState && (count >= LIGHT_SYSTEM_CHECK_COUNT * LIGHT_SYSTEM_TRESHOLD_ON)) || (lightsState && (count <= LIGHT_SYSTEM_CHECK_COUNT * LIGHT_SYSTEM_TRESHOLD_OFF))) {
     lightsState ^= true;
-    //+ turn lights on/off
+
+    setLed(LED_HEADLIGHTS, lightsState);
+    digitalWrite(PIN_HEADLIGHTS, lightsState);
   }
+  if (lightsState && lightsValue < 255) {
+    lightsValue++;
+  } else if (!lightsState && lightsValue > 0) {
+    lightsValue--;
+  }
+  analogWrite(PIN_HEADLIGHTS, digitalRead(PIN_SWITCH_HEADLIGHTS) ? lightsValue : 0);
 }
 
 void pTiltAlert() {
@@ -237,7 +245,6 @@ void pTiltAlert() {
     tiltAlertLastCheck = now;
     
     result = checkTilt();
-    writeLed(5, result);
     tiltAlertChecksIndex = (tiltAlertChecksIndex + 1) % TILT_ALERT_CHECK_COUNT;
     tiltAlertChecks[tiltAlertChecksIndex] = result;
 
@@ -248,8 +255,13 @@ void pTiltAlert() {
     if ((!tiltAlertState && (count >= TILT_ALERT_CHECK_COUNT * TILT_ALERT_TRESHOLD_ON)) || (tiltAlertState && (count <= TILT_ALERT_CHECK_COUNT * TILT_ALERT_TRESHOLD_OFF))) {
       tiltAlertState ^= true;
 
-      writeLed(LED_TILT_ALERT, tiltAlertState);
+      setLed(LED_TILT_ALERT, tiltAlertState);
+      if (tiltAlertState) {
+        blinkersStart = millis();
+      }
     }
+    digitalWrite(PIN_BLINKERS, tiltAlertState && !(((millis() - blinkersStart) / 300) % 2));
+    digitalWrite(PIN_BUZZER, tiltAlertState && digitalRead(PIN_SWITCH_BUZZER) && !(((millis() - blinkersStart) / 100) % 6));
   }
 }
 
@@ -259,16 +271,19 @@ void pButtonTest() {
   setLed(2, !digitalRead(PIN_SWITCH3));
   setLed(3, !digitalRead(PIN_SWITCH4));
 
-  digitalWrite(PIN_LIGHTS1, digitalRead(PIN_SWITCH1));
+  /*digitalWrite(PIN_LIGHTS1, digitalRead(PIN_SWITCH1));
   digitalWrite(PIN_LIGHTS2, digitalRead(PIN_SWITCH2));
   digitalWrite(PIN_LIGHTS3, digitalRead(PIN_SWITCH3));
-  digitalWrite(PIN_LIGHTS4, digitalRead(PIN_SWITCH4));
+  digitalWrite(PIN_LIGHTS4, digitalRead(PIN_SWITCH4));*/
 
   setLed(4, !digitalRead(PIN_BTN1));
   setLed(5, !digitalRead(PIN_BTN2));
   
-  setLed(LED_HEARTBEAT, (millis()/500) % 2);
   writeLeds();
+}
+
+void pHeartbeat() {
+  setLed(LED_HEARTBEAT, (millis()/500) % 2);
 }
 
 void pEraseEeprom() {
@@ -310,7 +325,7 @@ void pSerial() {
       case 'p': //*** clear errors
         eepromErrorIndex = 16;
         writeEepromErrorIndex();
-        writeLed(LED_ERROR, LOW);
+        setLed(LED_ERROR, LOW);
         Serial.println(".");
         break;
       case 'c': //*** throw test error
@@ -328,14 +343,34 @@ void pSerial() {
 }
 
 void pAccelTest() {
-  while (true) {
-    readAccelValues();
-    
-    Serial.print("AcX = "); Serial.print(AcX);
-    Serial.print(" | AcY = "); Serial.print(AcY);
-    Serial.print(" | AcZ = "); Serial.print(AcZ);
-    Serial.print(" | Angle = "); Serial.println(computeAngle(AcX, AcY, AcZ));
-    delay(300);
+  readAccelValues();
+  
+  Serial.print("AcX = "); Serial.print(AcX);
+  Serial.print(" | AcY = "); Serial.print(AcY);
+  Serial.print(" | AcZ = "); Serial.print(AcZ);
+  Serial.print(" | Angle = "); Serial.println(computeAngle(AcX, AcY, AcZ));
+  delay(300);
+}
+
+void pLightTest() {
+  Serial.print(readLight(0)); Serial.print(" | ");
+  Serial.print(readLight(1)); Serial.print(" | ");
+  Serial.println(readTreshold());
+
+  delay(300);
+}
+
+void pRearLights() {
+  digitalWrite(PIN_REAR_LIGHTS, digitalRead(PIN_SWITCH_REAR_LIGHTS));
+}
+
+void pButtons() {
+  writeLed(LED_INFO1, !digitalRead(PIN_BTN1));
+  writeLed(LED_INFO2, !digitalRead(PIN_BTN2));
+  if (!digitalRead(PIN_BTN1)) {
+    eepromErrorIndex = 16;
+    writeEepromErrorIndex();
+    setLed(LED_ERROR, LOW);
   }
 }
 
@@ -380,14 +415,14 @@ void setup() {
   digitalWrite(PIN_SWITCH4, HIGH);
 
   // light power led
-  writeLed(LED_PWR, HIGH);
+  setLed(LED_PWR, HIGH);
 
   // initialize I2C
   if (!i2c_init()) {
     writeError(2);
   }
   // setup MPU6050
-  result = turnAccelOn();
+  result = i2c_start((I2C_ADDR_MPU6050 << 1) | I2C_WRITE);
   if (result) {
     i2c_write(0x6B); // PWR_MGMT_1 register
     i2c_write(0);    // set to zero (wakes up the MPU-6050)  
@@ -396,13 +431,18 @@ void setup() {
   if (!result) {
     writeError(3);
   }
-
 }
 
 void loop() {
-  /*pLightSystem();*/
+  pHeartbeat();
+  
+  pLightSystem();
+  pRearLights();
   pTiltAlert();
-  pSerial();
 
-  //pButtonTest();
+  pButtons();
+  pSerial();
+  
+  writeLeds();
+  delay(LOOP_DELAY);
 }
