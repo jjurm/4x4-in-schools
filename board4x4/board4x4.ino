@@ -173,7 +173,12 @@ void readAccelValues() {
 }
 
 double computeAngle(int32_t x, int32_t y, int32_t z) {
-  return 90 - (acos( (x*x + y*y) / (sqrt(sq(x) + sq(y) + sq(z)) * sqrt(sq(x) + sq(y))) ) * 57.2958);
+  int32_t vx = 33, vy = 56, vz = -541; // measured values
+  int32_t ux = 0, uy = 1, uz = 0;
+  int32_t nx = vy*uz - uy*vz,
+          ny = vz*ux - vx*uz,
+          nz = vx*uy - vy*ux;
+  return 90 - acos( (x * nx + y * ny + z * nz) / (sqrt(sq(x) + sq(y) + sq(z)) * sqrt(sq(nx) + sq(ny) + sq(nz))) ) * 57.2958;
 }
 
 boolean checkTilt() {
@@ -182,7 +187,7 @@ boolean checkTilt() {
     return false;
   }
   angle = computeAngle(AcX, AcY, AcZ);
-  return angle >= TILT_ALERT_TRESHOLD_ANGLE;
+  return abs(angle) >= TILT_ALERT_TRESHOLD_ANGLE;
 }
 
 int getEepromErrorIndex() {
@@ -338,6 +343,9 @@ void pSerial() {
       case 't': //*** read light treshold
         Serial.println(readTreshold());
         break;
+      case 'a': //*** accel test 2 ***
+        pAccelTest2();
+        break;
     }
   }
 }
@@ -350,6 +358,25 @@ void pAccelTest() {
   Serial.print(" | AcZ = "); Serial.print(AcZ);
   Serial.print(" | Angle = "); Serial.println(computeAngle(AcX, AcY, AcZ));
   delay(300);
+}
+
+void pAccelTest2() {
+  long sx, sy, sz;
+
+  int n = 30;
+  for (int i = 0; i < n; i++) {
+    readAccelValues();
+    sx += AcX;
+    sy += AcY;
+    sz += AcZ;
+    delay(10);
+  }
+
+  Serial.print("AcX = "); Serial.print(AcX / n);
+  Serial.print(" | AcY = "); Serial.print(AcY / n);
+  Serial.print(" | AcZ = "); Serial.print(AcZ / n);
+  Serial.print(" | Angle = "); Serial.println(computeAngle(AcX / n, AcY / n, AcZ / n));
+  delay(200);
 }
 
 void pLightTest() {
